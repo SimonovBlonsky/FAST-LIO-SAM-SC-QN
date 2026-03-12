@@ -7,10 +7,17 @@
 #include <memory>
 #include <limits>
 #include <iostream>
+#include <algorithm>
 #include <utility> // pair
 ///// PCL
 #include <pcl/point_types.h> //pt
 #include <pcl/point_cloud.h> //cloud
+///// OpenCV
+#include <opencv2/core.hpp>
+#include <opencv2/features2d.hpp>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
 ///// Eigen
 #include <Eigen/Eigen>
 ///// Nano-GICP
@@ -54,6 +61,7 @@ struct QuatroConfig
 
 struct LoopClosureConfig
 {
+    std::string mode_ = "scancontext";
     bool enable_quatro_ = true;
     bool enable_submap_matching_ = true;
     int num_submap_keyframes_ = 10;
@@ -61,6 +69,12 @@ struct LoopClosureConfig
     double scancontext_max_correspondence_distance_;
     NanoGICPConfig gicp_config_;
     QuatroConfig quatro_config_;
+    int max_features_ = 1000;
+    double ratio_test_thr_ = 0.75;
+    int min_good_matches_ = 30;
+    int min_inliers_ = 20;
+    double min_inlier_ratio_ = 0.30;
+    int temporal_exclusion_frames_ = 30;
 };
 
 struct RegistrationOutput
@@ -82,14 +96,20 @@ private:
     pcl::PointCloud<PointType>::Ptr dst_cloud_;
     pcl::PointCloud<PointType> coarse_aligned_;
     pcl::PointCloud<PointType> aligned_;
+    cv::Ptr<cv::ORB> orb_;
+    cv::Mat loop_match_image_;
+    double last_loop_match_score_ = 0.0;
     LoopClosureConfig config_;
 
 public:
     explicit LoopClosure(const LoopClosureConfig &config);
     ~LoopClosure();
     void updateScancontext(pcl::PointCloud<PointType> cloud);
+    void computeVisualFeatures(PosePcd &keyframe);
     int fetchCandidateKeyframeIdx(const PosePcd &query_keyframe,
                                   const std::vector<PosePcd> &keyframes);
+    int fetchCandidateKeyframeIdxByImage(const PosePcd &query_keyframe,
+                                         const std::vector<PosePcd> &keyframes);
     PcdPair setSrcAndDstCloud(const std::vector<PosePcd> &keyframes,
                               const int src_idx,
                               const int dst_idx,
@@ -108,6 +128,8 @@ public:
     pcl::PointCloud<PointType> getTargetCloud();
     pcl::PointCloud<PointType> getCoarseAlignedCloud();
     pcl::PointCloud<PointType> getFinalAlignedCloud();
+    cv::Mat getLoopMatchImage();
+    double getLastLoopMatchScore() const;
     int getClosestKeyframeidx();
 };
 

@@ -56,10 +56,10 @@
 
     cd ~/your_workspace
     # nano_gicp, quatro first
-    catkin build nano_gicp -DCMAKE_BUILD_TYPE=Release
+    catkin build nano_gicp -DCMAKE_BUILD_TYPE=Release -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=OFF -DBOOST_ROOT=/usr -DBOOST_INCLUDEDIR=/usr/include -DBOOST_LIBRARYDIR=/usr/lib/x86_64-linux-gnu
     # Note the option!
-    catkin build quatro -DCMAKE_BUILD_TYPE=Release -DQUATRO_TBB=ON -DQUATRO_DEBUG=OFF
-    catkin build -DCMAKE_BUILD_TYPE=Release
+    catkin build quatro -DCMAKE_BUILD_TYPE=Release -DQUATRO_TBB=ON -DQUATRO_DEBUG=OFF -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=OFF -DBOOST_ROOT=/usr -DBOOST_INCLUDEDIR=/usr/include -DBOOST_LIBRARYDIR=/usr/lib/x86_64-linux-gnu
+    catkin build -DCMAKE_BUILD_TYPE=Release -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=OFF -DBOOST_ROOT=/usr -DBOOST_INCLUDEDIR=/usr/include -DBOOST_LIBRARYDIR=/usr/lib/x86_64-linux-gnu
     . devel/setup.bash
     ```
 

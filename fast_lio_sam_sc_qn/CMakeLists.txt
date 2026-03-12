@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   roslib
   rosbag
+  cv_bridge
   std_msgs
   geometry_msgs
   nav_msgs
@@ -35,6 +36,8 @@ find_package(catkin REQUIRED COMPONENTS
 )
 find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d features2d)
+set(GTSAM_DIR "/home/chenguyuan/code/gtsam_for_fast_lio_lc/gtsam/install/lib/cmake/GTSAM")
 find_package(GTSAM REQUIRED)
 if(PCL_FOUND)
   message(WARNING "PCL_VER: ${PCL_VERSION}, and PCL_DIR: ${PCL_INCLUDE_DIRS}")

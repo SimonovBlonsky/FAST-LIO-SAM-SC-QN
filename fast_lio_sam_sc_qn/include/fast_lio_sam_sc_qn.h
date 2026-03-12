@@ -10,6 +10,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <limits>
 #include <utility> // pair, make_pair
 #include <tuple>
 #include <filesystem>
@@ -19,6 +20,7 @@
 #include <ros/ros.h>
 #include <ros/package.h>              // get package_path
 #include <rosbag/bag.h>               // save map
+#include <cv_bridge/cv_bridge.h>
 #include <tf/LinearMath/Quaternion.h> // to Quaternion_to_euler
 #include <tf/LinearMath/Matrix3x3.h>  // to Quaternion_to_euler
 #include <tf/transform_datatypes.h>   // createQuaternionFromRPY
@@ -30,6 +32,7 @@
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
+#include <opencv2/core.hpp>
 ///// GTSAM
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Point3.h>
@@ -53,17 +56,27 @@ typedef message_filters::sync_policies::ApproximateTime<nav_msgs::Odometry, sens
 class FastLioSamScQn
 {
 private:
+    struct BufferedImage
+    {
+        cv::Mat image_;
+        double msg_stamp_ = -1.0;
+        double recv_stamp_ = -1.0;
+    };
     ///// basic params
     std::string map_frame_;
     std::string package_path_;
     std::string seq_name_;
+    std::string loop_mode_;
+    std::string img_topic_;
     ///// shared data - odom and pcd
     std::mutex realtime_pose_mutex_, keyframes_mutex_;
     std::mutex graph_mutex_, vis_mutex_;
+    std::mutex image_mutex_;
     Eigen::Matrix4d last_corrected_pose_ = Eigen::Matrix4d::Identity();
     Eigen::Matrix4d odom_delta_ = Eigen::Matrix4d::Identity();
     PosePcd current_frame_;
     std::vector<PosePcd> keyframes_;
+    std::deque<BufferedImage> image_buffer_;
     int current_keyframe_idx_ = 0;
     ///// graph and values
     bool is_initialized_ = false;
@@ -84,13 +97,17 @@ private:
     bool global_map_vis_switch_ = true;
     ///// results
     bool save_map_bag_ = false, save_map_pcd_ = false, save_in_kitti_format_ = false;
+    double image_sync_tolerance_sec_ = 0.05;
+    int max_image_buffer_size_ = 300;
     ///// ros
     ros::NodeHandle nh_;
     ros::Publisher corrected_odom_pub_, corrected_path_pub_, odom_pub_, path_pub_;
     ros::Publisher corrected_current_pcd_pub_, corrected_pcd_map_pub_, loop_detection_pub_;
     ros::Publisher realtime_pose_pub_;
     ros::Publisher debug_src_pub_, debug_dst_pub_, debug_coarse_aligned_pub_, debug_fine_aligned_pub_;
+    ros::Publisher input_image_pub_, loop_match_image_pub_;
     ros::Subscriber sub_save_flag_;
+    ros::Subscriber sub_img_;
     ros::Timer loop_timer_, vis_timer_;
     // odom, pcd sync, and save flag subscribers
     std::shared_ptr<message_filters::Synchronizer<odom_pcd_sync_pol>> sub_odom_pcd_sync_ = nullptr;
@@ -107,10 +124,12 @@ private:
     // methods
     void updateOdomsAndPaths(const PosePcd &pose_pcd_in);
     bool checkIfKeyframe(const PosePcd &pose_pcd_in, const PosePcd &latest_pose_pcd);
+    bool attachImageToKeyframe(PosePcd &pose_pcd_in);
     visualization_msgs::Marker getLoopMarkers(const gtsam::Values &corrected_esti_in);
     // cb
     void odomPcdCallback(const nav_msgs::OdometryConstPtr &odom_msg,
                          const sensor_msgs::PointCloud2ConstPtr &pcd_msg);
+    void imgCallback(const sensor_msgs::ImageConstPtr &img_msg);
     void saveFlagCallback(const std_msgs::String::ConstPtr &msg);
     void loopTimerFunc(const ros::TimerEvent &event);
     void visTimerFunc(const ros::TimerEvent &event);

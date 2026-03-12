@@ -14,14 +14,26 @@ FastLioSamScQn::FastLioSamScQn(const ros::NodeHandle &n_private):
     nh_.param<double>("/basic/vis_hz", vis_hz, 0.5);
     nh_.param<double>("/save_voxel_resolution", voxel_res_, 0.3);
     nh_.param<double>("/quatro_nano_gicp_voxel_resolution", lc_config.voxel_res_, 0.3);
+    nh_.param<std::string>("/loop/mode", loop_mode_, std::string("scancontext"));
+    nh_.param<std::string>("/visual/img_topic", img_topic_, std::string("/rgb_img"));
+    nh_.param<double>("/visual/sync_tolerance_sec", image_sync_tolerance_sec_, 0.05);
+    nh_.param<int>("/visual/max_image_buffer_size", max_image_buffer_size_, 300);
     /* keyframe */
     nh_.param<double>("/keyframe/keyframe_threshold", keyframe_thr_, 1.0);
-    nh_.param<int>("/keyframe/nusubmap_keyframes", lc_config.num_submap_keyframes_, 5);
+    nh_.param<int>("/keyframe/num_submap_keyframes", lc_config.num_submap_keyframes_, 5);
     nh_.param<bool>("/keyframe/enable_submap_matching", lc_config.enable_submap_matching_, false);
     /* ScanContext */
     nh_.param<double>("/scancontext_max_correspondence_distance",
                       lc_config.scancontext_max_correspondence_distance_,
                       35.0);
+    /* visual loop */
+    lc_config.mode_ = loop_mode_;
+    nh_.param<int>("/visual/max_features", lc_config.max_features_, 1000);
+    nh_.param<double>("/visual/ratio_test_thr", lc_config.ratio_test_thr_, 0.75);
+    nh_.param<int>("/visual/min_good_matches", lc_config.min_good_matches_, 30);
+    nh_.param<int>("/visual/min_inliers", lc_config.min_inliers_, 20);
+    nh_.param<double>("/visual/min_inlier_ratio", lc_config.min_inlier_ratio_, 0.30);
+    nh_.param<int>("/visual/temporal_exclusion_frames", lc_config.temporal_exclusion_frames_, 30);
     /* nano (GICP config) */
     nh_.param<int>("/nano_gicp/thread_number", gc.nano_thread_number_, 0);
     nh_.param<double>("/nano_gicp/icp_score_threshold", gc.icp_score_thr_, 10.0);
@@ -72,12 +84,15 @@ FastLioSamScQn::FastLioSamScQn(const ros::NodeHandle &n_private):
     debug_dst_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/dst", 10, true);
     debug_coarse_aligned_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/coarse_aligned_quatro", 10, true);
     debug_fine_aligned_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/fine_aligned_nano_gicp", 10, true);
+    input_image_pub_ = nh_.advertise<sensor_msgs::Image>("/visual_loop/input_image", 10, true);
+    loop_match_image_pub_ = nh_.advertise<sensor_msgs::Image>("/visual_loop/loop_match_image", 10, true);
     /* subscribers */
-    sub_odom_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(nh_, "/Odometry", 10);
+    sub_odom_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(nh_, "/aft_mapped_to_init", 10);
     sub_pcd_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(nh_, "/cloud_registered", 10);
     sub_odom_pcd_sync_ = std::make_shared<message_filters::Synchronizer<odom_pcd_sync_pol>>(odom_pcd_sync_pol(10), *sub_odom_, *sub_pcd_);
     sub_odom_pcd_sync_->registerCallback(boost::bind(&FastLioSamScQn::odomPcdCallback, this, _1, _2));
     sub_save_flag_ = nh_.subscribe("/save_dir", 1, &FastLioSamScQn::saveFlagCallback, this);
+    sub_img_ = nh_.subscribe(img_topic_, 50, &FastLioSamScQn::imgCallback, this);
     /* Timers */
     loop_timer_ = nh_.createTimer(ros::Duration(1 / loop_update_hz), &FastLioSamScQn::loopTimerFunc, this);
     vis_timer_ = nh_.createTimer(ros::Duration(1 / vis_hz), &FastLioSamScQn::visTimerFunc, this);
@@ -90,6 +105,7 @@ void FastLioSamScQn::odomPcdCallback(const nav_msgs::OdometryConstPtr &odom_msg,
     Eigen::Matrix4d last_odom_tf;
     last_odom_tf = current_frame_.pose_eig_;                              // to calculate delta
     current_frame_ = PosePcd(*odom_msg, *pcd_msg, current_keyframe_idx_); // to be checked if keyframe or not
+    current_frame_.recv_timestamp_ = ros::Time::now().toSec();
     high_resolution_clock::time_point t1 = high_resolution_clock::now();
     {
         //// 1. realtime pose = last corrected odom * delta (last -> current)
@@ -106,6 +122,8 @@ void FastLioSamScQn::odomPcdCallback(const nav_msgs::OdometryConstPtr &odom_msg,
 
     if (!is_initialized_) //// init only once
     {
+        attachImageToKeyframe(current_frame_);
+        loop_closure_->computeVisualFeatures(current_frame_);
         // others
         keyframes_.push_back(current_frame_);
         updateOdomsAndPaths(current_frame_);
@@ -126,6 +144,8 @@ void FastLioSamScQn::odomPcdCallback(const nav_msgs::OdometryConstPtr &odom_msg,
         high_resolution_clock::time_point t2 = high_resolution_clock::now();
         if (checkIfKeyframe(current_frame_, keyframes_.back()))
         {
+            attachImageToKeyframe(current_frame_);
+            loop_closure_->computeVisualFeatures(current_frame_);
             // 2-2. if so, save
             {
                 std::lock_guard<std::mutex> lock(keyframes_mutex_);
@@ -205,6 +225,67 @@ void FastLioSamScQn::odomPcdCallback(const nav_msgs::OdometryConstPtr &odom_msg,
     return;
 }
 
+void FastLioSamScQn::imgCallback(const sensor_msgs::ImageConstPtr &img_msg)
+{
+    cv_bridge::CvImageConstPtr cv_ptr;
+    try
+    {
+        cv_ptr = cv_bridge::toCvShare(img_msg, "bgr8");
+    }
+    catch (const cv_bridge::Exception &e)
+    {
+        ROS_WARN("cv_bridge exception: %s", e.what());
+        return;
+    }
+
+    BufferedImage buffered_image;
+    buffered_image.image_ = cv_ptr->image.clone();
+    buffered_image.msg_stamp_ = img_msg->header.stamp.toSec();
+    buffered_image.recv_stamp_ = ros::Time::now().toSec();
+    {
+        std::lock_guard<std::mutex> lock(image_mutex_);
+        image_buffer_.push_back(buffered_image);
+        while (static_cast<int>(image_buffer_.size()) > max_image_buffer_size_)
+        {
+            image_buffer_.pop_front();
+        }
+    }
+
+    input_image_pub_.publish(cv_bridge::CvImage(img_msg->header, "bgr8", buffered_image.image_).toImageMsg());
+}
+
+bool FastLioSamScQn::attachImageToKeyframe(PosePcd &pose_pcd_in)
+{
+    std::lock_guard<std::mutex> lock(image_mutex_);
+    if (image_buffer_.empty())
+    {
+        return false;
+    }
+
+    const double keyframe_recv_stamp = pose_pcd_in.recv_timestamp_ > 0.0 ? pose_pcd_in.recv_timestamp_ : ros::Time::now().toSec();
+    int best_idx = -1;
+    double best_dt = std::numeric_limits<double>::max();
+    for (size_t i = 0; i < image_buffer_.size(); ++i)
+    {
+        const double dt = std::fabs(image_buffer_[i].recv_stamp_ - keyframe_recv_stamp);
+        if (dt < best_dt)
+        {
+            best_dt = dt;
+            best_idx = static_cast<int>(i);
+        }
+    }
+
+    if (best_idx < 0 || best_dt > image_sync_tolerance_sec_)
+    {
+        return false;
+    }
+
+    pose_pcd_in.img_ = image_buffer_[best_idx].image_.clone();
+    pose_pcd_in.img_timestamp_ = image_buffer_[best_idx].msg_stamp_;
+    pose_pcd_in.has_image_ = !pose_pcd_in.img_.empty();
+    return pose_pcd_in.has_image_;
+}
+
 void FastLioSamScQn::loopTimerFunc(const ros::TimerEvent &event)
 {
     auto &latest_keyframe = keyframes_.back();
@@ -213,6 +294,12 @@ void FastLioSamScQn::loopTimerFunc(const ros::TimerEvent &event)
         return;
     }
     latest_keyframe.processed_ = true;
+
+    if (loop_mode_ == "visual" && !latest_keyframe.has_image_)
+    {
+        attachImageToKeyframe(latest_keyframe);
+        loop_closure_->computeVisualFeatures(latest_keyframe);
+    }
 
     high_resolution_clock::time_point t1 = high_resolution_clock::now();
     const int closest_keyframe_idx = loop_closure_->fetchCandidateKeyframeIdx(latest_keyframe, keyframes_);
@@ -251,6 +338,14 @@ void FastLioSamScQn::loopTimerFunc(const ros::TimerEvent &event)
     debug_dst_pub_.publish(pclToPclRos(loop_closure_->getTargetCloud(), map_frame_));
     debug_fine_aligned_pub_.publish(pclToPclRos(loop_closure_->getFinalAlignedCloud(), map_frame_));
     debug_coarse_aligned_pub_.publish(pclToPclRos(loop_closure_->getCoarseAlignedCloud(), map_frame_));
+    const cv::Mat loop_match_image = loop_closure_->getLoopMatchImage();
+    if (!loop_match_image.empty())
+    {
+        std_msgs::Header header;
+        header.stamp = ros::Time::now();
+        header.frame_id = map_frame_;
+        loop_match_image_pub_.publish(cv_bridge::CvImage(header, "bgr8", loop_match_image).toImageMsg());
+    }
 
     ROS_INFO("loop: %.1f", duration_cast<microseconds>(t2 - t1).count() / 1e3);
     return;

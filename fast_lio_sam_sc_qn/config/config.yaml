@@ -40,6 +40,21 @@ quatro:                                       # all values are from Quatro offic
     rot_cost_diff_threshold: 0.0001           # The cost threshold is compared with the difference between costs of consecutive iterations.
                                               # Once the diff. of cost < `rot_cost_diff_threshold`, then the optimization is finished.
 
+loop:
+  mode: "visual"                         # scancontext | visual
+
+visual:
+  img_topic: "/rgb_img"                       # image topic from FAST-LIVO2
+  sync_tolerance_sec: 0.05                    # timestamp tolerance for keyframe-image association
+  max_image_buffer_size: 300
+  max_features: 1000
+  ratio_test_thr: 0.75
+  min_good_matches: 30
+  min_inliers: 20
+  min_inlier_ratio: 0.30
+  temporal_exclusion_frames: 30
+  max_db_size: 2000
+
 result:
   save_map_pcd: true                         # Save result map in .pcd format, not voxelized and hence file size could be huge
   save_map_bag: true                         # Save result map in .bag format, NOTE: this is used for FAST-LIO-Localization-QN (https://github.com/engcang/FAST-LIO-Localization-QN)

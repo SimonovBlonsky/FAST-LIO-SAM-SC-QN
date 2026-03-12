@@ -3,6 +3,8 @@
 
 ///// coded headers
 #include "utilities.hpp"
+#include <opencv2/core.hpp>
+#include <opencv2/features2d.hpp>
 
 struct PosePcd
 {
@@ -10,8 +12,14 @@ struct PosePcd
     Eigen::Matrix4d pose_eig_ = Eigen::Matrix4d::Identity();
     Eigen::Matrix4d pose_corrected_eig_ = Eigen::Matrix4d::Identity();
     double timestamp_;
+    double recv_timestamp_ = -1.0;
+    double img_timestamp_ = -1.0;
     int idx_;
     bool processed_ = false;
+    bool has_image_ = false;
+    cv::Mat img_;
+    std::vector<cv::KeyPoint> keypoints_;
+    cv::Mat descriptors_;
     PosePcd() {}
     PosePcd(const nav_msgs::Odometry &odom_in,
             const sensor_msgs::PointCloud2 &pcd_in,

@@ -25,6 +25,7 @@ LoopClosure::LoopClosure(const LoopClosureConfig &config)
                                                           qc.use_optimized_matching_,
                                                           qc.quatro_distance_threshold_,
                                                           qc.quatro_max_num_corres_);
+    orb_ = cv::ORB::create(config_.max_features_);
     src_cloud_.reset(new pcl::PointCloud<PointType>);
     dst_cloud_.reset(new pcl::PointCloud<PointType>);
 }
@@ -36,9 +37,34 @@ void LoopClosure::updateScancontext(pcl::PointCloud<PointType> cloud)
     sc_manager_.makeAndSaveScancontextAndKeys(cloud);
 }
 
+void LoopClosure::computeVisualFeatures(PosePcd &keyframe)
+{
+    keyframe.keypoints_.clear();
+    keyframe.descriptors_.release();
+    if (!keyframe.has_image_ || keyframe.img_.empty())
+    {
+        return;
+    }
+
+    cv::Mat gray;
+    if (keyframe.img_.channels() == 3)
+    {
+        cv::cvtColor(keyframe.img_, gray, cv::COLOR_BGR2GRAY);
+    }
+    else
+    {
+        gray = keyframe.img_;
+    }
+    orb_->detectAndCompute(gray, cv::noArray(), keyframe.keypoints_, keyframe.descriptors_);
+}
+
 int LoopClosure::fetchCandidateKeyframeIdx(const PosePcd &query_keyframe,
                                            const std::vector<PosePcd> &keyframes)
 {
+    if (config_.mode_ == "visual")
+    {
+        return fetchCandidateKeyframeIdxByImage(query_keyframe, keyframes);
+    }
     // from ScanContext, get the loop candidate
     std::pair<int, float> sc_detected_ = sc_manager_.detectLoopClosureIDGivenScan(query_keyframe.pcd_); // int: nearest node index,
                                                                                                         // float: relative yaw
@@ -53,6 +79,98 @@ int LoopClosure::fetchCandidateKeyframeIdx(const PosePcd &query_keyframe,
         }
     }
     return -1;
+}
+
+int LoopClosure::fetchCandidateKeyframeIdxByImage(const PosePcd &query_keyframe,
+                                                  const std::vector<PosePcd> &keyframes)
+{
+    loop_match_image_.release();
+    last_loop_match_score_ = 0.0;
+    if (!query_keyframe.has_image_ || query_keyframe.descriptors_.empty())
+    {
+        ROS_WARN("[Visual Loop] Query keyframe has no valid image descriptors");
+        return -1;
+    }
+
+    int best_idx = -1;
+    int best_inliers = 0;
+    double best_ratio = 0.0;
+    cv::Mat best_vis;
+
+    cv::BFMatcher matcher(cv::NORM_HAMMING);
+    const int max_candidate_idx = static_cast<int>(keyframes.size()) - config_.temporal_exclusion_frames_;
+    for (int i = 0; i < max_candidate_idx; ++i)
+    {
+        const auto &candidate = keyframes[i];
+        if (!candidate.has_image_ || candidate.descriptors_.empty())
+        {
+            continue;
+        }
+
+        std::vector<std::vector<cv::DMatch>> knn_matches;
+        matcher.knnMatch(query_keyframe.descriptors_, candidate.descriptors_, knn_matches, 2);
+
+        std::vector<cv::DMatch> good_matches;
+        good_matches.reserve(knn_matches.size());
+        for (const auto &match_pair : knn_matches)
+        {
+            if (match_pair.size() < 2) continue;
+            if (match_pair[0].distance < config_.ratio_test_thr_ * match_pair[1].distance)
+            {
+                good_matches.push_back(match_pair[0]);
+            }
+        }
+
+        int inliers = 0;
+        double inlier_ratio = 0.0;
+        std::vector<char> inlier_mask;
+        if (static_cast<int>(good_matches.size()) >= config_.min_good_matches_)
+        {
+            std::vector<cv::Point2f> query_pts;
+            std::vector<cv::Point2f> candidate_pts;
+            query_pts.reserve(good_matches.size());
+            candidate_pts.reserve(good_matches.size());
+            for (const auto &match : good_matches)
+            {
+                query_pts.push_back(query_keyframe.keypoints_[match.queryIdx].pt);
+                candidate_pts.push_back(candidate.keypoints_[match.trainIdx].pt);
+            }
+
+            cv::Mat inlier_mask_mat;
+            cv::findHomography(query_pts, candidate_pts, cv::RANSAC, 3.0, inlier_mask_mat);
+            if (!inlier_mask_mat.empty())
+            {
+                inlier_mask.assign(inlier_mask_mat.begin<uchar>(), inlier_mask_mat.end<uchar>());
+                inliers = static_cast<int>(std::count(inlier_mask.begin(), inlier_mask.end(), static_cast<char>(1)));
+                inlier_ratio = good_matches.empty() ? 0.0 : static_cast<double>(inliers) / static_cast<double>(good_matches.size());
+            }
+        }
+
+        ROS_INFO("[Visual Loop] query %d vs %d: good_matches=%zu, inliers=%d, inlier_ratio=%.3f",
+                 query_keyframe.idx_, candidate.idx_, good_matches.size(), inliers, inlier_ratio);
+
+        if (inliers >= config_.min_inliers_ && inlier_ratio >= config_.min_inlier_ratio_)
+        {
+            if (inliers > best_inliers || (inliers == best_inliers && inlier_ratio > best_ratio))
+            {
+                best_idx = i;
+                best_inliers = inliers;
+                best_ratio = inlier_ratio;
+                cv::drawMatches(query_keyframe.img_, query_keyframe.keypoints_,
+                                candidate.img_, candidate.keypoints_,
+                                good_matches, best_vis,
+                                cv::Scalar::all(-1), cv::Scalar::all(-1),
+                                inlier_mask, cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
+            }
+        }
+    }
+
+    if (best_idx >= 0)
+    {
+        loop_match_image_ = best_vis;
+        last_loop_match_score_ = static_cast<double>(best_inliers);
+    }
+    return best_idx;
 }
 
 PcdPair LoopClosure::setSrcAndDstCloud(const std::vector<PosePcd> &keyframes,
@@ -216,6 +334,16 @@ pcl::PointCloud<PointType> LoopClosure::getCoarseAlignedCloud()
 pcl::PointCloud<PointType> LoopClosure::getFinalAlignedCloud()
 {
     return aligned_;
+}
+
+cv::Mat LoopClosure::getLoopMatchImage()
+{
+    return loop_match_image_;
+}
+
+double LoopClosure::getLastLoopMatchScore() const
+{
+    return last_loop_match_score_;
 }
 
 int LoopClosure::getClosestKeyframeidx()

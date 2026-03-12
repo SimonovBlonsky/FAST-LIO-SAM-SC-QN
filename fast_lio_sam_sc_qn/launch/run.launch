@@ -13,6 +13,7 @@
 	<rosparam command="load" file="$(find fast_lio_sam_sc_qn)/config/config.yaml" />
 	<node pkg="fast_lio_sam_sc_qn" type="fast_lio_sam_sc_qn_node" name="fast_lio_sam_sc_qn_node" output="screen">
 		<remap from="/Odometry" to="$(arg odom_topic)"/>
+		<!-- <remap from="/aft_mapped_to_init" to="$(arg odom_topic)"/> -->
 		<remap from="/cloud_registered" to="$(arg lidar_topic)"/>
 	</node>
 
@@ -44,5 +45,15 @@
 	<include if="$(eval arg ('lidar') == 'vbr-colosseo')" file="$(find fast_lio)/../fastlio_config_launch/vbr-colosseo.launch">
 		<arg name="rviz" value="false"/>
 	</include>
+	<include if="$(eval arg ('lidar') == 'avia_livo')" file="$(find fast_livo)/launch/mapping_avia.launch">
+		<arg name="rviz" value="false"/>
+	</include>
+	<include if="$(eval arg ('lidar') == 'kitti_livo')" file="$(find fast_livo)/launch/mapping_kitti.launch">
+		<arg name="rviz" value="false"/>
+	</include>
+	<include if="$(eval arg ('lidar') == 'dog')" file="$(find fast_lio)/launch/dog.launch">
+		<arg name="rviz" value="false"/>
+	</include>
+	
 
 </launch>
