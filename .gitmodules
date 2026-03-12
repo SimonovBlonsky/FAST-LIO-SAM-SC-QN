@@ -3,7 +3,7 @@
 	url = https://github.com/engcang/Quatro
 [submodule "third_party/FAST_LIO"]
 	path = third_party/FAST_LIO
-	url = https://github.com/hku-mars/FAST_LIO
+	url = git@github.com:SimonovBlonsky/FAST_LIO.git
 [submodule "third_party/nano_gicp"]
 	path = third_party/nano_gicp
 	url = https://github.com/engcang/nano_gicp
@@ -13,3 +13,9 @@
 [submodule "third_party/scancontext_tro"]
 	path = third_party/scancontext_tro
 	url = https://github.com/engcang/scancontext_tro
+[submodule "third_party/FAST-LIVO2"]
+	path = third_party/FAST-LIVO2
+	url = git@github.com:SimonovBlonsky/FAST-LIVO2.git
+[submodule "third_party/rpg_vikit"]
+	path = third_party/rpg_vikit
+	url = git@github.com:SimonovBlonsky/rpg_vikit.git
